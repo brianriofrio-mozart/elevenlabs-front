@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import './app.css';
+import './App.css';
 
 export default function RealtimeSTT() {
   const wsRef = useRef(null);
