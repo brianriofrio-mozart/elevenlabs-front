@@ -147,7 +147,7 @@ export default function RealtimeSTT() {
   };
 
   useEffect(() => {
-    wsRef.current = new WebSocket("ws://localhost:3001");
+    wsRef.current = new WebSocket("wss://elevenlabs-stt-tts.onrender.com");
 
     const ttsContext = new AudioContext();
     ttsAudioContextRef.current = ttsContext;
