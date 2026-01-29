@@ -27,6 +27,7 @@ body {
 .chat-container {
   width: 100%;
   max-width: 800px;
+  min-width: 800px;
   height: 90vh;
   max-height: 900px;
   background: white;
@@ -448,6 +449,7 @@ body {
   .chat-container {
     height: 100vh;
     max-height: 100vh;
+    min-width: 100%;
     border-radius: 0;
   }
 
