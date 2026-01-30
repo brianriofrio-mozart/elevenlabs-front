@@ -4,36 +4,32 @@ import './App.css';
 export default function RealtimeSTT() {
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
-  const processorRef = useRef(null);
-  const sourceRef = useRef(null);
+  const audioWorkletNodeRef = useRef(null);
   const streamRef = useRef(null);
   const chatContainerRef = useRef(null);
   
-  // 🔊 Para reproducción de PCM
+  // 🔊 Para reproducción de PCM - MEJORADO
   const ttsAudioContextRef = useRef(null);
   const ttsGainNodeRef = useRef(null);
   const nextPlayTimeRef = useRef(0);
   const pcmBufferRef = useRef([]);
   const isPlayingRef = useRef(false);
-  const leftoverBytesRef = useRef(null);
+  const leftoverBytesRef = useRef(new Uint8Array(0)); // 🆕 Mejor manejo
   const currentTTSRef = useRef(false);
+  const expectedSampleRateRef = useRef(24000); // 🆕 Track sample rate
   
   // 🆕 Para controlar las fuentes de audio activas
   const activeSourcesRef = useRef([]);
   
-  const SILENCE_THRESHOLD = 0.01;
-  const SILENCE_MS = 400;
-  const silenceStartRef = useRef(null);
-  const hasCommittedRef = useRef(false);
-
   const [partial, setPartial] = useState("");
-  const [messages, setMessages] = useState([]); // 🆕 Array de mensajes
+  const [messages, setMessages] = useState([]);
   const [thinking, setThinking] = useState(false);
   const [agentText, setAgentText] = useState("");
   const [audioError, setAudioError] = useState(null);
   const [ttsFormat, setTtsFormat] = useState(null);
   const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
-  const [isRecording, setIsRecording] = useState(false); // 🆕
+  const [isRecording, setIsRecording] = useState(false);
+  const [audioStats, setAudioStats] = useState(null);
 
   // 🆕 Auto-scroll al último mensaje
   useEffect(() => {
@@ -62,7 +58,7 @@ export default function RealtimeSTT() {
       nextPlayTimeRef.current = ttsAudioContextRef.current.currentTime;
     }
     
-    leftoverBytesRef.current = null;
+    leftoverBytesRef.current = new Uint8Array(0); // 🆕 Reset limpio
     setIsAgentSpeaking(false);
     currentTTSRef.current = false;
     isPlayingRef.current = false;
@@ -72,6 +68,7 @@ export default function RealtimeSTT() {
     }
   };
 
+  // 🆕 FUNCIÓN MEJORADA PARA REPRODUCIR PCM
   const playPCMChunk = (pcmData, sampleRate = 24000) => {
     const audioContext = ttsAudioContextRef.current;
     if (!audioContext) {
@@ -80,34 +77,64 @@ export default function RealtimeSTT() {
     }
 
     try {
-      let buffer = pcmData;
-      
-      if (leftoverBytesRef.current) {
-        const combined = new Uint8Array(leftoverBytesRef.current.byteLength + buffer.byteLength);
-        combined.set(new Uint8Array(leftoverBytesRef.current), 0);
-        combined.set(new Uint8Array(buffer), leftoverBytesRef.current.byteLength);
-        buffer = combined.buffer;
-        leftoverBytesRef.current = null;
-      }
-      
-      if (buffer.byteLength % 2 !== 0) {
-        leftoverBytesRef.current = buffer.slice(buffer.byteLength - 1);
-        buffer = buffer.slice(0, buffer.byteLength - 1);
-      }
-      
-      if (buffer.byteLength === 0) {
-        return;
-      }
-      
-      const int16Data = new Int16Array(buffer);
-      const float32Data = new Float32Array(int16Data.length);
-      for (let i = 0; i < int16Data.length; i++) {
-        float32Data[i] = int16Data[i] / 32768.0;
+      // Convertir a Uint8Array si viene como ArrayBuffer
+      let uint8Data = pcmData instanceof ArrayBuffer 
+        ? new Uint8Array(pcmData)
+        : new Uint8Array(pcmData.buffer || pcmData);
+
+      // 🆕 Combinar con leftover bytes previos
+      if (leftoverBytesRef.current.length > 0) {
+        const combined = new Uint8Array(leftoverBytesRef.current.length + uint8Data.length);
+        combined.set(leftoverBytesRef.current, 0);
+        combined.set(uint8Data, leftoverBytesRef.current.length);
+        uint8Data = combined;
+        leftoverBytesRef.current = new Uint8Array(0);
       }
 
+      // 🆕 Verificar alineación a 16-bit (debe ser par)
+      if (uint8Data.length % 2 !== 0) {
+        console.warn(`⚠️ Unaligned PCM chunk: ${uint8Data.length} bytes. Saving last byte.`);
+        leftoverBytesRef.current = new Uint8Array([uint8Data[uint8Data.length - 1]]);
+        uint8Data = uint8Data.slice(0, -1);
+      }
+
+      // Si no hay datos después de alinear, salir
+      if (uint8Data.length === 0) {
+        return;
+      }
+
+      // 🆕 Validar tamaño mínimo (evitar chunks muy pequeños que causan glitches)
+      const MIN_SAMPLES = 256; // ~10ms @ 24kHz
+      const numSamples = uint8Data.length / 2;
+      
+      if (numSamples < MIN_SAMPLES) {
+        console.warn(`⚠️ Chunk too small (${numSamples} samples), buffering...`);
+        leftoverBytesRef.current = uint8Data;
+        return;
+      }
+
+      // Convertir Int16 → Float32
+      const int16View = new Int16Array(uint8Data.buffer, uint8Data.byteOffset, uint8Data.length / 2);
+      const float32Data = new Float32Array(int16View.length);
+      
+      for (let i = 0; i < int16View.length; i++) {
+        // Normalización mejorada con dithering
+        const sample = int16View[i] / 32768.0;
+        float32Data[i] = Math.max(-1.0, Math.min(1.0, sample));
+      }
+
+      // 🆕 Validar que no hay NaN o Infinity
+      const hasInvalidSamples = float32Data.some(s => !isFinite(s));
+      if (hasInvalidSamples) {
+        console.error("❌ Invalid samples detected (NaN/Infinity), skipping chunk");
+        return;
+      }
+
+      // Crear AudioBuffer
       const audioBuffer = audioContext.createBuffer(1, float32Data.length, sampleRate);
       audioBuffer.getChannelData(0).set(float32Data);
 
+      // Crear source y conectar
       const source = audioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(ttsGainNodeRef.current);
@@ -115,6 +142,12 @@ export default function RealtimeSTT() {
       const now = audioContext.currentTime;
       const startTime = Math.max(now, nextPlayTimeRef.current);
       
+      // 🆕 Detectar gap (si hay silencio no intencional)
+      const gap = startTime - now;
+      if (gap > 0.1) { // > 100ms gap
+        console.warn(`⚠️ Audio gap detected: ${(gap * 1000).toFixed(0)}ms`);
+      }
+
       activeSourcesRef.current.push(source);
       
       source.onended = () => {
@@ -129,23 +162,37 @@ export default function RealtimeSTT() {
       
     } catch (err) {
       console.error("❌ Error playing PCM:", err);
-      setAudioError(err.message);
+      setAudioError(`Audio playback error: ${err.message}`);
     }
   };
 
+  // 🆕 COLA DE REPRODUCCIÓN MEJORADA
   const processPCMQueue = () => {
-    if (pcmBufferRef.current.length > 0 && !isPlayingRef.current) {
-      isPlayingRef.current = true;
-      
+    if (pcmBufferRef.current.length === 0 || isPlayingRef.current) {
+      return;
+    }
+
+    isPlayingRef.current = true;
+    
+    try {
       while (pcmBufferRef.current.length > 0) {
         const chunk = pcmBufferRef.current.shift();
+        
+        // Validar sample rate
+        if (chunk.sampleRate !== expectedSampleRateRef.current) {
+          console.warn(`⚠️ Sample rate mismatch: expected ${expectedSampleRateRef.current}, got ${chunk.sampleRate}`);
+        }
+        
         playPCMChunk(chunk.data, chunk.sampleRate);
       }
-      
+    } catch (err) {
+      console.error("❌ Error processing PCM queue:", err);
+    } finally {
       isPlayingRef.current = false;
     }
   };
 
+  // Inicializar WebSocket y TTS AudioContext
   useEffect(() => {
     wsRef.current = new WebSocket("wss://elevenlabs-stt-tts.onrender.com");
 
@@ -164,12 +211,25 @@ export default function RealtimeSTT() {
         event.data.arrayBuffer().then((buffer) => {
           const sampleRate = ttsFormat?.sampleRate || 24000;
           
+          // 🆕 Validar que el buffer no esté vacío
+          if (buffer.byteLength === 0) {
+            console.warn("⚠️ Received empty audio buffer");
+            return;
+          }
+
+          // 🆕 Validar que el buffer esté alineado
+          if (buffer.byteLength % 2 !== 0) {
+            console.warn(`⚠️ Received unaligned buffer: ${buffer.byteLength} bytes`);
+          }
+          
           pcmBufferRef.current.push({
             data: buffer,
             sampleRate: sampleRate
           });
 
           processPCMQueue();
+        }).catch(err => {
+          console.error("❌ Error converting blob to buffer:", err);
         });
 
         return;
@@ -185,7 +245,6 @@ export default function RealtimeSTT() {
         if (msg.type === "final") {
           const userText = msg.data.text.trim();
           if (userText) {
-            // 🆕 Agregar mensaje del usuario al chat
             setMessages(prev => [...prev, {
               id: Date.now(),
               type: 'user',
@@ -214,7 +273,6 @@ export default function RealtimeSTT() {
         if (msg.type === "agent_complete") {
           console.log("✅ Agent response complete");
           
-          // 🆕 Agregar mensaje del agente al chat
           if (msg.text && msg.text.trim()) {
             setMessages(prev => [...prev, {
               id: Date.now(),
@@ -224,31 +282,43 @@ export default function RealtimeSTT() {
             }]);
           }
           
-          setAgentText(""); // Limpiar texto temporal
+          setAgentText("");
         }
 
         if (msg.type === "tts_audio_start") {
           console.log("🎬 TTS audio starting");
-          setTtsFormat({
+          
+          const format = {
             format: msg.format,
             sampleRate: msg.sampleRate,
             channels: msg.channels,
             bitDepth: msg.bitDepth
-          });
+          };
+          
+          setTtsFormat(format);
+          expectedSampleRateRef.current = msg.sampleRate; // 🆕 Track expected rate
           
           currentTTSRef.current = true;
           setIsAgentSpeaking(true);
           
+          // 🆕 Limpiar estado previo
+          leftoverBytesRef.current = new Uint8Array(0);
+          
           if (ttsAudioContextRef.current && nextPlayTimeRef.current <= ttsAudioContextRef.current.currentTime) {
             nextPlayTimeRef.current = ttsAudioContextRef.current.currentTime;
           }
-          
-          leftoverBytesRef.current = null;
         }
 
         if (msg.type === "tts_audio_end") {
           console.log("🏁 TTS audio ended");
           currentTTSRef.current = false;
+          
+          // 🆕 Procesar cualquier leftover final
+          if (leftoverBytesRef.current.length >= 2) {
+            console.log(`🔊 Processing final leftover: ${leftoverBytesRef.current.length} bytes`);
+            playPCMChunk(leftoverBytesRef.current, expectedSampleRateRef.current);
+            leftoverBytesRef.current = new Uint8Array(0);
+          }
           
           setTimeout(() => {
             if (activeSourcesRef.current.length === 0) {
@@ -294,80 +364,76 @@ export default function RealtimeSTT() {
       ttsGainNodeRef.current = null;
       pcmBufferRef.current = [];
       nextPlayTimeRef.current = 0;
+      leftoverBytesRef.current = new Uint8Array(0);
     };
   }, []);
 
   const startRecording = async () => {
     try {
-      silenceStartRef.current = null;
-      hasCommittedRef.current = false;
       setAudioError(null);
       setIsRecording(true);
 
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          googNoiseSuppression: true,
+          googHighpassFilter: true,
+          googTypingNoiseDetection: true
+        } 
+      });
       streamRef.current = stream;
 
       const audioContext = new AudioContext({ sampleRate: 16000 });
       audioContextRef.current = audioContext;
 
+      await audioContext.audioWorklet.addModule('/audio-recorder-worklet.js');
+      
+      const workletNode = new AudioWorkletNode(audioContext, 'audio-recorder-processor');
+      audioWorkletNodeRef.current = workletNode;
+
       const source = audioContext.createMediaStreamSource(stream);
-      sourceRef.current = source;
+      source.connect(workletNode);
 
-      const processor = audioContext.createScriptProcessor(1024, 1, 1);
-      processor.onaudioprocess = (e) => {
-        const float32Data = e.inputBuffer.getChannelData(0);
-        const pcm16 = floatTo16BitPCM(float32Data);
+      workletNode.port.onmessage = (event) => {
+        const { type, data } = event.data;
 
-        if (wsRef.current?.readyState === WebSocket.OPEN) {
-          wsRef.current.send(pcm16);
-        }
-
-        let sum = 0;
-        for (let i = 0; i < float32Data.length; i++) {
-          sum += float32Data[i] * float32Data[i];
-        }
-        const rms = Math.sqrt(sum / float32Data.length);
-
-        const now = Date.now();
-
-        if (rms < SILENCE_THRESHOLD) {
-          if (!silenceStartRef.current) silenceStartRef.current = now;
-
-          if (
-            now - silenceStartRef.current > SILENCE_MS &&
-            !hasCommittedRef.current &&
-            wsRef.current?.readyState === WebSocket.OPEN
-          ) {
-            console.log("🔕 Silencio detectado → auto commit");
-            wsRef.current.send(JSON.stringify({ event: "stop" }));
-            hasCommittedRef.current = true;
+        if (type === 'audioData') {
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(data);
           }
-        } else {
-          silenceStartRef.current = null;
-          hasCommittedRef.current = false;
+        } 
+        else if (type === 'silenceDetected') {
+          console.log(`🔕 Silencio detectado (${event.data.duration.toFixed(0)}ms) → auto commit`);
+          
+          if (wsRef.current?.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify({ event: "stop" }));
+          }
+          
+          workletNode.port.postMessage({ type: 'reset' });
+        }
+        else if (type === 'stats') {
+          setAudioStats({
+            averageRMS: event.data.averageRMS.toFixed(4),
+            silenceFrames: event.data.silenceFrames,
+          });
         }
       };
-      processorRef.current = processor;
 
-      source.connect(processor);
-      processor.connect(audioContext.destination);
-      
-      console.log("🎙️ Recording started");
+      console.log("🎙️ Recording started with AudioWorklet");
     } catch (err) {
-      console.error("Error al acceder al micrófono:", err);
+      console.error("❌ Error al acceder al micrófono:", err);
       setAudioError(err.message);
       setIsRecording(false);
     }
   };
 
   const stopRecording = () => {
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
-    }
-    if (sourceRef.current) {
-      sourceRef.current.disconnect();
-      sourceRef.current = null;
+    if (audioWorkletNodeRef.current) {
+      audioWorkletNodeRef.current.disconnect();
+      audioWorkletNodeRef.current.port.close();
+      audioWorkletNodeRef.current = null;
     }
 
     if (streamRef.current) {
@@ -385,6 +451,7 @@ export default function RealtimeSTT() {
     }
     
     setIsRecording(false);
+    setAudioStats(null);
     console.log("⏹️ Recording stopped");
   };
 
@@ -441,7 +508,6 @@ export default function RealtimeSTT() {
           </div>
         ))}
 
-        {/* MENSAJE PARCIAL (mientras hablas) */}
         {partial && (
           <div className="message message-user message-partial">
             <div className="message-avatar">👤</div>
@@ -452,7 +518,6 @@ export default function RealtimeSTT() {
           </div>
         )}
 
-        {/* PENSANDO */}
         {thinking && (
           <div className="message message-agent">
             <div className="message-avatar">🤖</div>
@@ -466,7 +531,6 @@ export default function RealtimeSTT() {
           </div>
         )}
 
-        {/* RESPUESTA EN STREAMING */}
         {agentText && !thinking && (
           <div className="message message-agent message-streaming">
             <div className="message-avatar">🤖</div>
@@ -523,25 +587,24 @@ export default function RealtimeSTT() {
         </button>
       </div>
 
-      {/* DEBUG INFO (opcional, puedes removerlo) */}
-      {ttsFormat && (
-        <div className="debug-info">
-          {ttsFormat.format?.toUpperCase()} @ {ttsFormat.sampleRate}Hz
-        </div>
-      )}
+      {/* DEBUG INFO */}
+      <div className="debug-info">
+        {ttsFormat && (
+          <span>
+            TTS: {ttsFormat.format?.toUpperCase()} @ {ttsFormat.sampleRate}Hz
+          </span>
+        )}
+        {audioStats && isRecording && (
+          <span style={{ marginLeft: '1rem' }}>
+            RMS: {audioStats.averageRMS} | Silence: {audioStats.silenceFrames}
+          </span>
+        )}
+        {leftoverBytesRef.current.length > 0 && (
+          <span style={{ marginLeft: '1rem', color: '#ff9800' }}>
+            Buffer: {leftoverBytesRef.current.length}B
+          </span>
+        )}
+      </div>
     </div>
   );
-}
-
-function floatTo16BitPCM(float32Array) {
-  const buffer = new ArrayBuffer(float32Array.length * 2);
-  const view = new DataView(buffer);
-
-  let offset = 0;
-  for (let i = 0; i < float32Array.length; i++, offset += 2) {
-    let sample = Math.max(-1, Math.min(1, float32Array[i]));
-    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true);
-  }
-
-  return buffer;
 }
