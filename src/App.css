@@ -442,6 +442,48 @@ body {
   font-family: 'Courier New', monospace;
 }
 
+/* Estados de conexión */
+.status-badge.connecting,
+.status-badge.initializing {
+  background: #ff9800;
+  color: white;
+}
+
+.status-badge.ready {
+  background: #4caf50;
+  color: white;
+}
+
+.connecting-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  background: white;
+  border-radius: 50%;
+  margin-right: 6px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.connection-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  background: #fff3cd;
+  border-bottom: 1px solid #ffc107;
+  color: #856404;
+  font-size: 14px;
+}
+
+.connection-icon {
+  font-size: 20px;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 /* ============================================
    RESPONSIVE
    ============================================ */

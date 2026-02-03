@@ -8,17 +8,15 @@ export default function RealtimeSTT() {
   const streamRef = useRef(null);
   const chatContainerRef = useRef(null);
   
-  // 🔊 Para reproducción de PCM - MEJORADO
+  // 🔊 Para reproducción de PCM
   const ttsAudioContextRef = useRef(null);
   const ttsGainNodeRef = useRef(null);
   const nextPlayTimeRef = useRef(0);
   const pcmBufferRef = useRef([]);
   const isPlayingRef = useRef(false);
-  const leftoverBytesRef = useRef(new Uint8Array(0)); // 🆕 Mejor manejo
+  const leftoverBytesRef = useRef(new Uint8Array(0));
   const currentTTSRef = useRef(false);
-  const expectedSampleRateRef = useRef(24000); // 🆕 Track sample rate
-  
-  // 🆕 Para controlar las fuentes de audio activas
+  const expectedSampleRateRef = useRef(24000);
   const activeSourcesRef = useRef([]);
   
   const [partial, setPartial] = useState("");
@@ -30,6 +28,13 @@ export default function RealtimeSTT() {
   const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [audioStats, setAudioStats] = useState(null);
+  
+  // 🆕 Estados para manejar el "spin down"
+  const [connectionStatus, setConnectionStatus] = useState('disconnected'); // disconnected | connecting | initializing | ready | failed
+  const [connectionMessage, setConnectionMessage] = useState('');
+  const reconnectTimeoutRef = useRef(null);
+  const maxReconnectAttempts = 3;
+  const reconnectAttemptRef = useRef(0);
 
   // 🆕 Auto-scroll al último mensaje
   useEffect(() => {
@@ -58,7 +63,7 @@ export default function RealtimeSTT() {
       nextPlayTimeRef.current = ttsAudioContextRef.current.currentTime;
     }
     
-    leftoverBytesRef.current = new Uint8Array(0); // 🆕 Reset limpio
+    leftoverBytesRef.current = new Uint8Array(0);
     setIsAgentSpeaking(false);
     currentTTSRef.current = false;
     isPlayingRef.current = false;
@@ -66,6 +71,39 @@ export default function RealtimeSTT() {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ event: "stop_tts" }));
     }
+  };
+
+  // 🆕 FUNCIÓN PARA VERIFICAR SI EL BACKEND ESTÁ LISTO
+  const checkBackendHealth = async () => {
+    try {
+      const response = await fetch('https://elevenlabs-stt-tts.onrender.com/health');
+      return response.ok;
+    } catch (error) {
+      console.log('Backend not ready yet:', error.message);
+      return false;
+    }
+  };
+
+  // 🆕 FUNCIÓN PARA ESPERAR QUE EL BACKEND ESTÉ LISTO
+  const waitForBackend = async (maxAttempts = 30) => {
+    setConnectionStatus('connecting');
+    setConnectionMessage('Verificando servidor...');
+    
+    for (let i = 0; i < maxAttempts; i++) {
+      const isReady = await checkBackendHealth();
+      
+      if (isReady) {
+        console.log('✅ Backend is ready');
+        return true;
+      }
+      
+      const secondsRemaining = Math.ceil((maxAttempts - i) * 2);
+      setConnectionMessage(`Esperando servidor... (${secondsRemaining}s)`);
+      
+      await new Promise(resolve => setTimeout(resolve, 2000));
+    }
+    
+    return false;
   };
 
   // 🆕 FUNCIÓN MEJORADA PARA REPRODUCIR PCM
@@ -77,12 +115,10 @@ export default function RealtimeSTT() {
     }
 
     try {
-      // Convertir a Uint8Array si viene como ArrayBuffer
       let uint8Data = pcmData instanceof ArrayBuffer 
         ? new Uint8Array(pcmData)
         : new Uint8Array(pcmData.buffer || pcmData);
 
-      // 🆕 Combinar con leftover bytes previos
       if (leftoverBytesRef.current.length > 0) {
         const combined = new Uint8Array(leftoverBytesRef.current.length + uint8Data.length);
         combined.set(leftoverBytesRef.current, 0);
@@ -91,50 +127,40 @@ export default function RealtimeSTT() {
         leftoverBytesRef.current = new Uint8Array(0);
       }
 
-      // 🆕 Verificar alineación a 16-bit (debe ser par)
       if (uint8Data.length % 2 !== 0) {
-        console.warn(`⚠️ Unaligned PCM chunk: ${uint8Data.length} bytes. Saving last byte.`);
         leftoverBytesRef.current = new Uint8Array([uint8Data[uint8Data.length - 1]]);
         uint8Data = uint8Data.slice(0, -1);
       }
 
-      // Si no hay datos después de alinear, salir
       if (uint8Data.length === 0) {
         return;
       }
 
-      // 🆕 Validar tamaño mínimo (evitar chunks muy pequeños que causan glitches)
-      const MIN_SAMPLES = 256; // ~10ms @ 24kHz
+      const MIN_SAMPLES = 256;
       const numSamples = uint8Data.length / 2;
       
       if (numSamples < MIN_SAMPLES) {
-        console.warn(`⚠️ Chunk too small (${numSamples} samples), buffering...`);
         leftoverBytesRef.current = uint8Data;
         return;
       }
 
-      // Convertir Int16 → Float32
       const int16View = new Int16Array(uint8Data.buffer, uint8Data.byteOffset, uint8Data.length / 2);
       const float32Data = new Float32Array(int16View.length);
       
       for (let i = 0; i < int16View.length; i++) {
-        // Normalización mejorada con dithering
         const sample = int16View[i] / 32768.0;
         float32Data[i] = Math.max(-1.0, Math.min(1.0, sample));
       }
 
-      // 🆕 Validar que no hay NaN o Infinity
       const hasInvalidSamples = float32Data.some(s => !isFinite(s));
       if (hasInvalidSamples) {
         console.error("❌ Invalid samples detected (NaN/Infinity), skipping chunk");
         return;
       }
 
-      // Crear AudioBuffer
       const audioBuffer = audioContext.createBuffer(1, float32Data.length, sampleRate);
       audioBuffer.getChannelData(0).set(float32Data);
 
-      // Crear source y conectar
       const source = audioContext.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(ttsGainNodeRef.current);
@@ -142,9 +168,8 @@ export default function RealtimeSTT() {
       const now = audioContext.currentTime;
       const startTime = Math.max(now, nextPlayTimeRef.current);
       
-      // 🆕 Detectar gap (si hay silencio no intencional)
       const gap = startTime - now;
-      if (gap > 0.1) { // > 100ms gap
+      if (gap > 0.1) {
         console.warn(`⚠️ Audio gap detected: ${(gap * 1000).toFixed(0)}ms`);
       }
 
@@ -166,7 +191,7 @@ export default function RealtimeSTT() {
     }
   };
 
-  // 🆕 COLA DE REPRODUCCIÓN MEJORADA
+  // 🆕 COLA DE REPRODUCCIÓN
   const processPCMQueue = () => {
     if (pcmBufferRef.current.length === 0 || isPlayingRef.current) {
       return;
@@ -178,7 +203,6 @@ export default function RealtimeSTT() {
       while (pcmBufferRef.current.length > 0) {
         const chunk = pcmBufferRef.current.shift();
         
-        // Validar sample rate
         if (chunk.sampleRate !== expectedSampleRateRef.current) {
           console.warn(`⚠️ Sample rate mismatch: expected ${expectedSampleRateRef.current}, got ${chunk.sampleRate}`);
         }
@@ -192,10 +216,217 @@ export default function RealtimeSTT() {
     }
   };
 
-  // Inicializar WebSocket y TTS AudioContext
-  useEffect(() => {
-    wsRef.current = new WebSocket("wss://elevenlabs-stt-tts.onrender.com");
+  // 🆕 FUNCIÓN PARA CONECTAR WEBSOCKET CON REINTENTOS
+  const connectWebSocket = async () => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      console.log('WebSocket already connected');
+      return;
+    }
 
+    // Primero verificar que el backend esté listo
+    const backendReady = await waitForBackend();
+    
+    if (!backendReady) {
+      setConnectionStatus('failed');
+      setConnectionMessage('No se pudo conectar al servidor. El servidor puede estar iniciando.');
+      setAudioError('Servidor no disponible. Por favor intenta de nuevo en 1 minuto.');
+      return;
+    }
+
+    // Ahora sí, conectar WebSocket
+    setConnectionStatus('initializing');
+    setConnectionMessage('Conectando al servicio de voz...');
+
+    try {
+      const ws = new WebSocket("wss://elevenlabs-stt-tts.onrender.com");
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        console.log('🔗 WebSocket connected, waiting for service ready...');
+        reconnectAttemptRef.current = 0;
+      };
+
+      ws.onmessage = (event) => {
+        if (event.data instanceof Blob) {
+          event.data.arrayBuffer().then((buffer) => {
+            const sampleRate = ttsFormat?.sampleRate || 24000;
+            
+            if (buffer.byteLength === 0) {
+              console.warn("⚠️ Received empty audio buffer");
+              return;
+            }
+
+            if (buffer.byteLength % 2 !== 0) {
+              console.warn(`⚠️ Received unaligned buffer: ${buffer.byteLength} bytes`);
+            }
+            
+            pcmBufferRef.current.push({
+              data: buffer,
+              sampleRate: sampleRate
+            });
+
+            processPCMQueue();
+          }).catch(err => {
+            console.error("❌ Error converting blob to buffer:", err);
+          });
+
+          return;
+        }
+
+        try {
+          const msg = JSON.parse(event.data);
+
+          // 🆕 MANEJAR ESTADOS DE CONEXIÓN
+          if (msg.type === "initializing") {
+            setConnectionStatus('initializing');
+            setConnectionMessage(msg.message || 'Inicializando servicio...');
+            console.log('⏳ Service initializing...');
+          }
+
+          if (msg.type === "ready") {
+            setConnectionStatus('ready');
+            setConnectionMessage('');
+            setAudioError(null);
+            console.log('✅ Service ready!');
+          }
+
+          if (msg.type === "connection_failed") {
+            setConnectionStatus('failed');
+            setConnectionMessage('');
+            setAudioError(msg.error || 'No se pudo conectar al servicio');
+            console.error('❌ Connection failed:', msg.error);
+          }
+
+          if (msg.type === "partial") {
+            setPartial(msg.data.text || "");
+          }
+
+          if (msg.type === "final") {
+            const userText = msg.data.text.trim();
+            if (userText) {
+              setMessages(prev => [...prev, {
+                id: Date.now(),
+                type: 'user',
+                text: userText,
+                timestamp: new Date()
+              }]);
+            }
+            setPartial("");
+          }
+
+          if (msg.type === "thinking") {
+            setThinking(true);
+            setAgentText("");
+          }
+
+          if (msg.type === "agent_text") {
+            setThinking(false);
+            setAgentText(msg.text);
+          }
+
+          if (msg.type === "agent_text_chunk") {
+            setThinking(false);
+            setAgentText(msg.accumulated);
+          }
+
+          if (msg.type === "agent_complete") {
+            console.log("✅ Agent response complete");
+            
+            if (msg.text && msg.text.trim()) {
+              setMessages(prev => [...prev, {
+                id: Date.now(),
+                type: 'agent',
+                text: msg.text.trim(),
+                timestamp: new Date()
+              }]);
+            }
+            
+            setAgentText("");
+          }
+
+          if (msg.type === "tts_audio_start") {
+            console.log("🎬 TTS audio starting");
+            
+            const format = {
+              format: msg.format,
+              sampleRate: msg.sampleRate,
+              channels: msg.channels,
+              bitDepth: msg.bitDepth
+            };
+            
+            setTtsFormat(format);
+            expectedSampleRateRef.current = msg.sampleRate;
+            
+            currentTTSRef.current = true;
+            setIsAgentSpeaking(true);
+            
+            leftoverBytesRef.current = new Uint8Array(0);
+            
+            if (ttsAudioContextRef.current && nextPlayTimeRef.current <= ttsAudioContextRef.current.currentTime) {
+              nextPlayTimeRef.current = ttsAudioContextRef.current.currentTime;
+            }
+          }
+
+          if (msg.type === "tts_audio_end") {
+            console.log("🏁 TTS audio ended");
+            currentTTSRef.current = false;
+            
+            if (leftoverBytesRef.current.length >= 2) {
+              console.log(`🔊 Processing final leftover: ${leftoverBytesRef.current.length} bytes`);
+              playPCMChunk(leftoverBytesRef.current, expectedSampleRateRef.current);
+              leftoverBytesRef.current = new Uint8Array(0);
+            }
+            
+            setTimeout(() => {
+              if (activeSourcesRef.current.length === 0) {
+                setIsAgentSpeaking(false);
+              }
+            }, 100);
+          }
+
+          if (msg.type === "error") {
+            console.error("❌ Server error:", msg.error);
+            setAudioError(msg.error);
+          }
+
+        } catch (err) {
+          console.error("❌ Error parsing JSON:", err);
+        }
+      };
+
+      ws.onerror = (err) => {
+        console.error("❌ WebSocket error:", err);
+        setConnectionStatus('failed');
+        setAudioError("Error de conexión WebSocket");
+      };
+
+      ws.onclose = () => {
+        console.log("🔌 WebSocket closed");
+        setConnectionStatus('disconnected');
+        
+        // 🆕 Intentar reconectar si no fue cierre intencional
+        if (reconnectAttemptRef.current < maxReconnectAttempts) {
+          reconnectAttemptRef.current++;
+          console.log(`🔄 Attempting to reconnect (${reconnectAttemptRef.current}/${maxReconnectAttempts})...`);
+          
+          reconnectTimeoutRef.current = setTimeout(() => {
+            connectWebSocket();
+          }, 3000);
+        } else {
+          setAudioError('Conexión perdida. Por favor recarga la página.');
+        }
+      };
+
+    } catch (error) {
+      console.error('❌ Error connecting WebSocket:', error);
+      setConnectionStatus('failed');
+      setAudioError('No se pudo conectar al servidor');
+    }
+  };
+
+  // 🆕 Inicializar WebSocket y TTS AudioContext con verificación
+  useEffect(() => {
+    // Inicializar TTS AudioContext
     const ttsContext = new AudioContext();
     ttsAudioContextRef.current = ttsContext;
     
@@ -206,148 +437,15 @@ export default function RealtimeSTT() {
 
     console.log("🎧 TTS AudioContext initialized");
 
-    wsRef.current.onmessage = (event) => {
-      if (event.data instanceof Blob) {
-        event.data.arrayBuffer().then((buffer) => {
-          const sampleRate = ttsFormat?.sampleRate || 24000;
-          
-          // 🆕 Validar que el buffer no esté vacío
-          if (buffer.byteLength === 0) {
-            console.warn("⚠️ Received empty audio buffer");
-            return;
-          }
-
-          // 🆕 Validar que el buffer esté alineado
-          if (buffer.byteLength % 2 !== 0) {
-            console.warn(`⚠️ Received unaligned buffer: ${buffer.byteLength} bytes`);
-          }
-          
-          pcmBufferRef.current.push({
-            data: buffer,
-            sampleRate: sampleRate
-          });
-
-          processPCMQueue();
-        }).catch(err => {
-          console.error("❌ Error converting blob to buffer:", err);
-        });
-
-        return;
-      }
-
-      try {
-        const msg = JSON.parse(event.data);
-
-        if (msg.type === "partial") {
-          setPartial(msg.data.text || "");
-        }
-
-        if (msg.type === "final") {
-          const userText = msg.data.text.trim();
-          if (userText) {
-            setMessages(prev => [...prev, {
-              id: Date.now(),
-              type: 'user',
-              text: userText,
-              timestamp: new Date()
-            }]);
-          }
-          setPartial("");
-        }
-
-        if (msg.type === "thinking") {
-          setThinking(true);
-          setAgentText("");
-        }
-
-        if (msg.type === "agent_text") {
-          setThinking(false);
-          setAgentText(msg.text);
-        }
-
-        if (msg.type === "agent_text_chunk") {
-          setThinking(false);
-          setAgentText(msg.accumulated);
-        }
-
-        if (msg.type === "agent_complete") {
-          console.log("✅ Agent response complete");
-          
-          if (msg.text && msg.text.trim()) {
-            setMessages(prev => [...prev, {
-              id: Date.now(),
-              type: 'agent',
-              text: msg.text.trim(),
-              timestamp: new Date()
-            }]);
-          }
-          
-          setAgentText("");
-        }
-
-        if (msg.type === "tts_audio_start") {
-          console.log("🎬 TTS audio starting");
-          
-          const format = {
-            format: msg.format,
-            sampleRate: msg.sampleRate,
-            channels: msg.channels,
-            bitDepth: msg.bitDepth
-          };
-          
-          setTtsFormat(format);
-          expectedSampleRateRef.current = msg.sampleRate; // 🆕 Track expected rate
-          
-          currentTTSRef.current = true;
-          setIsAgentSpeaking(true);
-          
-          // 🆕 Limpiar estado previo
-          leftoverBytesRef.current = new Uint8Array(0);
-          
-          if (ttsAudioContextRef.current && nextPlayTimeRef.current <= ttsAudioContextRef.current.currentTime) {
-            nextPlayTimeRef.current = ttsAudioContextRef.current.currentTime;
-          }
-        }
-
-        if (msg.type === "tts_audio_end") {
-          console.log("🏁 TTS audio ended");
-          currentTTSRef.current = false;
-          
-          // 🆕 Procesar cualquier leftover final
-          if (leftoverBytesRef.current.length >= 2) {
-            console.log(`🔊 Processing final leftover: ${leftoverBytesRef.current.length} bytes`);
-            playPCMChunk(leftoverBytesRef.current, expectedSampleRateRef.current);
-            leftoverBytesRef.current = new Uint8Array(0);
-          }
-          
-          setTimeout(() => {
-            if (activeSourcesRef.current.length === 0) {
-              setIsAgentSpeaking(false);
-            }
-          }, 100);
-        }
-
-        if (msg.type === "error") {
-          console.error("❌ Server error:", msg.error);
-          setAudioError(msg.error);
-        }
-
-      } catch (err) {
-        console.error("❌ Error parsing JSON:", err);
-      }
-    };
-
-    wsRef.current.onerror = (err) => {
-      console.error("❌ WebSocket error:", err);
-      setAudioError("WebSocket connection error");
-    };
-
-    wsRef.current.onclose = () => {
-      console.log("🔌 WebSocket closed");
-    };
+    // Conectar WebSocket con verificación
+    connectWebSocket();
 
     return () => {
       console.log("🧹 Cleaning up...");
+      
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       
       stopAllAudio();
       
@@ -369,6 +467,12 @@ export default function RealtimeSTT() {
   }, []);
 
   const startRecording = async () => {
+    // 🆕 Verificar que esté conectado antes de grabar
+    if (connectionStatus !== 'ready') {
+      setAudioError('Esperando conexión al servicio...');
+      return;
+    }
+
     try {
       setAudioError(null);
       setIsRecording(true);
@@ -464,6 +568,24 @@ export default function RealtimeSTT() {
           <h1>Voice Chat Assistant</h1>
         </div>
         <div className="header-status">
+          {/* 🆕 Mostrar estado de conexión */}
+          {connectionStatus === 'connecting' && (
+            <span className="status-badge connecting">
+              <span className="connecting-dot"></span>
+              Conectando...
+            </span>
+          )}
+          {connectionStatus === 'initializing' && (
+            <span className="status-badge initializing">
+              <span className="connecting-dot"></span>
+              Inicializando...
+            </span>
+          )}
+          {connectionStatus === 'ready' && !isRecording && !isAgentSpeaking && (
+            <span className="status-badge ready">
+              ✓ Listo
+            </span>
+          )}
           {isRecording && (
             <span className="status-badge recording">
               <span className="recording-dot"></span>
@@ -479,12 +601,24 @@ export default function RealtimeSTT() {
         </div>
       </div>
 
+      {/* 🆕 MENSAJE DE CONEXIÓN */}
+      {connectionMessage && (
+        <div className="connection-banner">
+          <span className="connection-icon">⏳</span>
+          <span className="connection-text">{connectionMessage}</span>
+        </div>
+      )}
+
       {/* CHAT MESSAGES */}
       <div className="chat-messages" ref={chatContainerRef}>
         {messages.length === 0 && (
           <div className="empty-state">
             <div className="empty-icon">💬</div>
-            <p>Presiona "Iniciar" y comienza a hablar</p>
+            <p>
+              {connectionStatus === 'ready' 
+                ? 'Presiona "Iniciar" y comienza a hablar'
+                : 'Esperando conexión...'}
+            </p>
           </div>
         )}
 
@@ -563,6 +697,7 @@ export default function RealtimeSTT() {
         <button 
           className={`control-btn ${isRecording ? 'btn-recording' : 'btn-start'}`}
           onClick={isRecording ? stopRecording : startRecording}
+          disabled={connectionStatus !== 'ready'} // 🆕 Deshabilitar hasta que esté listo
         >
           {isRecording ? (
             <>
@@ -572,7 +707,7 @@ export default function RealtimeSTT() {
           ) : (
             <>
               <span className="btn-icon">🎙️</span>
-              Iniciar
+              {connectionStatus === 'ready' ? 'Iniciar' : 'Conectando...'}
             </>
           )}
         </button>
@@ -589,8 +724,9 @@ export default function RealtimeSTT() {
 
       {/* DEBUG INFO */}
       <div className="debug-info">
+        <span>Estado: {connectionStatus}</span>
         {ttsFormat && (
-          <span>
+          <span style={{ marginLeft: '1rem' }}>
             TTS: {ttsFormat.format?.toUpperCase()} @ {ttsFormat.sampleRate}Hz
           </span>
         )}
