@@ -543,3 +543,65 @@ body {
     color: black;
   }
 }
+
+/* Contenedor que agrupa el input y el botón de enviar */
+.text-input-form {
+  display: flex;
+  gap: 10px;
+  padding: 0 24px 15px 24px;
+  background: white; /* Mantiene la base blanca del área de controles */
+}
+
+/* El cuadro de texto (Input Box) */
+.chat-input-field {
+  flex: 1;
+  padding: 12px 18px;
+  border: 2px solid #e5e7eb;
+  border-radius: 25px;
+  outline: none;
+  font-size: 15px;
+  
+  /* CAMBIOS SOLICITADOS */
+  background-color: #f9fafb; /* Color claro (gris muy tenue) como el fondo del chat */
+  color: #000000;            /* Letras negras puras */
+  
+  transition: all 0.3s ease;
+}
+
+/* Efecto visual al hacer clic en el input */
+.chat-input-field:focus {
+  background-color: #ffffff; /* Se vuelve blanco puro al escribir */
+  border-color: #667eea;     /* Borde del color de la marca (púrpura) */
+  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+}
+
+/* Marcador de posición (Placeholder) en un gris suave */
+.chat-input-field::placeholder {
+  color: #9ca3af;
+}
+
+/* Botón de enviar con los colores de la página */
+.btn-send {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+  border: none;
+  width: 45px;
+  height: 45px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 10px rgba(118, 75, 162, 0.3);
+  transition: transform 0.2s;
+}
+
+.btn-send:hover:not(:disabled) {
+  transform: scale(1.05);
+}
+
+.btn-send:disabled {
+  background: #e5e7eb;
+  cursor: not-allowed;
+  box-shadow: none;
+}

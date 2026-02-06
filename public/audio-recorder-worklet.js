@@ -9,7 +9,7 @@ class AudioRecorderProcessor extends AudioWorkletProcessor {
     
     // Configuración de detección de silencio
     this.silenceThreshold = 0.01;
-    this.silenceDurationMs = 400;
+    this.silenceDurationMs = 1500; // Aumentado de 400 a 1500
     this.silenceFrameCount = 0;
     this.silenceFrameThreshold = 0;
     this.hasCommitted = false;

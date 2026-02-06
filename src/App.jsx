@@ -28,6 +28,8 @@ export default function RealtimeSTT() {
   const [isAgentSpeaking, setIsAgentSpeaking] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [audioStats, setAudioStats] = useState(null);
+  const [textInput, setTextInput] = useState("");
+  const [isProcessing, setIsProcessing] = useState(false);
   
   // 🆕 Estados para manejar el "spin down"
   const [connectionStatus, setConnectionStatus] = useState('disconnected'); // disconnected | connecting | initializing | ready | failed
@@ -76,7 +78,7 @@ export default function RealtimeSTT() {
   // 🆕 FUNCIÓN PARA VERIFICAR SI EL BACKEND ESTÁ LISTO
   const checkBackendHealth = async () => {
     try {
-      const response = await fetch('https://elevenlabs-stt-tts.onrender.com/health');
+      const response = await fetch('https://elevenlabs-front-six.vercel.app/health');
       return response.ok;
     } catch (error) {
       console.log('Backend not ready yet:', error.message);
@@ -238,7 +240,7 @@ export default function RealtimeSTT() {
     setConnectionMessage('Conectando al servicio de voz...');
 
     try {
-      const ws = new WebSocket("wss://elevenlabs-stt-tts.onrender.com");
+      const ws = new WebSocket("ws://elevenlabs-front-six.vercel.app");
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -316,7 +318,7 @@ export default function RealtimeSTT() {
 
           if (msg.type === "thinking") {
             setThinking(true);
-            setAgentText("");
+            setAgentText(""); // Limpiamos para la nueva respuesta
           }
 
           if (msg.type === "agent_text") {
@@ -326,7 +328,15 @@ export default function RealtimeSTT() {
 
           if (msg.type === "agent_text_chunk") {
             setThinking(false);
-            setAgentText(msg.accumulated);
+            // Solo actualizamos si el nuevo texto acumulado es realmente más largo 
+            // que el que ya tenemos, y usamos siempre la versión limpia.
+            setAgentText(prev => {
+              const newText = msg.accumulated || "";
+              if (newText.length > prev.length) {
+                return newText;
+              }
+              return prev;
+            });
           }
 
           if (msg.type === "agent_complete") {
@@ -422,6 +432,37 @@ export default function RealtimeSTT() {
       setConnectionStatus('failed');
       setAudioError('No se pudo conectar al servidor');
     }
+  };
+
+const handleSendText = (e) => {
+  e.preventDefault();
+  if (!textInput.trim() || connectionStatus !== 'ready') return;
+
+  // 1. IMPORTANTE: Detener audio actual para que no se traslapen las voces
+  stopAllAudio(); 
+
+  // 2. Reiniciar estados visuales inmediatamente
+  setThinking(true);
+  setAgentText(""); 
+  setPartial(""); // Limpia transcripciones de voz residuales
+
+  // 3. Enviar el mensaje
+  if (wsRef.current?.readyState === WebSocket.OPEN) {
+    wsRef.current.send(JSON.stringify({ 
+      type: "text_input", 
+      text: textInput.trim() 
+    }));
+  }
+
+  // 4. Agregar a la lista de mensajes
+  setMessages(prev => [...prev, {
+    id: Date.now(),
+    type: 'user',
+    text: textInput.trim(),
+    timestamp: new Date()
+  }]);
+
+  setTextInput("");
   };
 
   // 🆕 Inicializar WebSocket y TTS AudioContext con verificación
@@ -693,33 +734,51 @@ export default function RealtimeSTT() {
       )}
 
       {/* CONTROLS */}
-      <div className="chat-controls">
-        <button 
-          className={`control-btn ${isRecording ? 'btn-recording' : 'btn-start'}`}
-          onClick={isRecording ? stopRecording : startRecording}
-          disabled={connectionStatus !== 'ready'} // 🆕 Deshabilitar hasta que esté listo
-        >
-          {isRecording ? (
-            <>
-              <span className="btn-icon">⏹️</span>
-              Detener
-            </>
-          ) : (
-            <>
-              <span className="btn-icon">🎙️</span>
-              {connectionStatus === 'ready' ? 'Iniciar' : 'Conectando...'}
-            </>
-          )}
-        </button>
+      <div className="chat-controls-container">
+        {/* Nuevo formulario de texto */}
+        <form className="text-input-form" onSubmit={handleSendText}>
+          <input 
+            type="text"
+            className="chat-input-field"
+            placeholder="Escribe un mensaje..."
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            disabled={connectionStatus !== 'ready'}
+          />
+          <button type="submit" className="btn-send" disabled={!textInput.trim() || connectionStatus !== 'ready'}>
+            <span style={{ fontSize: '18px' }}>➤</span>
+          </button>
+        </form>
 
-        <button 
-          className="control-btn btn-stop-audio"
-          onClick={stopAllAudio}
-          disabled={!isAgentSpeaking}
-        >
-          <span className="btn-icon">🔇</span>
-          Silenciar
-        </button>
+        {/* Controles de voz originales */}
+        <div className="chat-controls" style={{ paddingTop: 0 }}>
+          <button 
+            className={`control-btn ${isRecording ? 'btn-recording' : 'btn-start'}`}
+            onClick={isRecording ? stopRecording : startRecording}
+            disabled={connectionStatus !== 'ready'}
+          >
+            {isRecording ? (
+              <>
+                <span className="btn-icon">⏹️</span>
+                Detener
+              </>
+            ) : (
+              <>
+                <span className="btn-icon">🎙️</span>
+                {connectionStatus === 'ready' ? 'Iniciar' : 'Conectando...'}
+              </>
+            )}
+          </button>
+
+          <button 
+            className="control-btn btn-stop-audio"
+            onClick={stopAllAudio}
+            disabled={!isAgentSpeaking}
+          >
+            <span className="btn-icon">🔇</span>
+            Silenciar
+          </button>
+        </div>
       </div>
 
       {/* DEBUG INFO */}
