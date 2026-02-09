@@ -78,7 +78,7 @@ export default function RealtimeSTT() {
   // 🆕 FUNCIÓN PARA VERIFICAR SI EL BACKEND ESTÁ LISTO
   const checkBackendHealth = async () => {
     try {
-      const response = await fetch('https://elevenlabs-front-six.vercel.app/health');
+      const response = await fetch('https://elevenlabs-stt-tts.onrender.com/health');
       return response.ok;
     } catch (error) {
       console.log('Backend not ready yet:', error.message);
@@ -240,7 +240,7 @@ export default function RealtimeSTT() {
     setConnectionMessage('Conectando al servicio de voz...');
 
     try {
-      const ws = new WebSocket("ws://elevenlabs-front-six.vercel.app");
+      const ws = new WebSocket("wss://elevenlabs-stt-tts.onrender.com");
       wsRef.current = ws;
 
       ws.onopen = () => {
