@@ -29,21 +29,26 @@ export default function RealtimeSTT() {
   const [isRecording, setIsRecording] = useState(false);
   const [audioStats, setAudioStats] = useState(null);
   
-  // 🆕 Estados para manejar el "spin down"
-  const [connectionStatus, setConnectionStatus] = useState('disconnected'); // disconnected | connecting | initializing | ready | failed
+  const [connectionStatus, setConnectionStatus] = useState('disconnected');
   const [connectionMessage, setConnectionMessage] = useState('');
   const reconnectTimeoutRef = useRef(null);
   const maxReconnectAttempts = 3;
   const reconnectAttemptRef = useRef(0);
 
-  // 🆕 Auto-scroll al último mensaje
+  // 🆕 ESTADOS PARA CHAT DE TEXTO
+  const [textInput, setTextInput] = useState("");
+  const [enableTTSForText, setEnableTTSForText] = useState(false);
+  const [isSendingText, setIsSendingText] = useState(false);
+  const textInputRef = useRef(null);
+
+  // Auto-scroll al último mensaje
   useEffect(() => {
     if (chatContainerRef.current) {
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
     }
   }, [messages, agentText, thinking]);
 
-  // 🆕 FUNCIÓN PARA DETENER TODO EL AUDIO
+  // FUNCIÓN PARA DETENER TODO EL AUDIO
   const stopAllAudio = () => {
     console.log("🛑 Stopping all audio playback");
     
@@ -73,7 +78,6 @@ export default function RealtimeSTT() {
     }
   };
 
-  // 🆕 FUNCIÓN PARA VERIFICAR SI EL BACKEND ESTÁ LISTO
   const checkBackendHealth = async () => {
     try {
       const response = await fetch('https://elevenlabs-stt-tts.onrender.com/health');
@@ -84,7 +88,6 @@ export default function RealtimeSTT() {
     }
   };
 
-  // 🆕 FUNCIÓN PARA ESPERAR QUE EL BACKEND ESTÉ LISTO
   const waitForBackend = async (maxAttempts = 30) => {
     setConnectionStatus('connecting');
     setConnectionMessage('Verificando servidor...');
@@ -106,7 +109,6 @@ export default function RealtimeSTT() {
     return false;
   };
 
-  // 🆕 FUNCIÓN MEJORADA PARA REPRODUCIR PCM
   const playPCMChunk = (pcmData, sampleRate = 24000) => {
     const audioContext = ttsAudioContextRef.current;
     if (!audioContext) {
@@ -191,7 +193,6 @@ export default function RealtimeSTT() {
     }
   };
 
-  // 🆕 COLA DE REPRODUCCIÓN
   const processPCMQueue = () => {
     if (pcmBufferRef.current.length === 0 || isPlayingRef.current) {
       return;
@@ -216,14 +217,12 @@ export default function RealtimeSTT() {
     }
   };
 
-  // 🆕 FUNCIÓN PARA CONECTAR WEBSOCKET CON REINTENTOS
   const connectWebSocket = async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       console.log('WebSocket already connected');
       return;
     }
 
-    // Primero verificar que el backend esté listo
     const backendReady = await waitForBackend();
     
     if (!backendReady) {
@@ -233,7 +232,6 @@ export default function RealtimeSTT() {
       return;
     }
 
-    // Ahora sí, conectar WebSocket
     setConnectionStatus('initializing');
     setConnectionMessage('Conectando al servicio de voz...');
 
@@ -276,7 +274,6 @@ export default function RealtimeSTT() {
         try {
           const msg = JSON.parse(event.data);
 
-          // 🆕 MANEJAR ESTADOS DE CONEXIÓN
           if (msg.type === "initializing") {
             setConnectionStatus('initializing');
             setConnectionMessage(msg.message || 'Inicializando servicio...');
@@ -308,10 +305,23 @@ export default function RealtimeSTT() {
                 id: Date.now(),
                 type: 'user',
                 text: userText,
+                source: 'voice',
                 timestamp: new Date()
               }]);
             }
             setPartial("");
+          }
+
+          // 🆕 Confirmación de mensaje de texto recibido por el backend
+          if (msg.type === "text_received") {
+            setMessages(prev => [...prev, {
+              id: Date.now(),
+              type: 'user',
+              text: msg.text,
+              source: 'text',
+              timestamp: new Date()
+            }]);
+            setIsSendingText(false);
           }
 
           if (msg.type === "thinking") {
@@ -342,6 +352,7 @@ export default function RealtimeSTT() {
             }
             
             setAgentText("");
+            setIsSendingText(false);
           }
 
           if (msg.type === "tts_audio_start") {
@@ -387,6 +398,7 @@ export default function RealtimeSTT() {
           if (msg.type === "error") {
             console.error("❌ Server error:", msg.error);
             setAudioError(msg.error);
+            setIsSendingText(false);
           }
 
         } catch (err) {
@@ -404,7 +416,6 @@ export default function RealtimeSTT() {
         console.log("🔌 WebSocket closed");
         setConnectionStatus('disconnected');
         
-        // 🆕 Intentar reconectar si no fue cierre intencional
         if (reconnectAttemptRef.current < maxReconnectAttempts) {
           reconnectAttemptRef.current++;
           console.log(`🔄 Attempting to reconnect (${reconnectAttemptRef.current}/${maxReconnectAttempts})...`);
@@ -424,9 +435,7 @@ export default function RealtimeSTT() {
     }
   };
 
-  // 🆕 Inicializar WebSocket y TTS AudioContext con verificación
   useEffect(() => {
-    // Inicializar TTS AudioContext
     const ttsContext = new AudioContext();
     ttsAudioContextRef.current = ttsContext;
     
@@ -437,7 +446,6 @@ export default function RealtimeSTT() {
 
     console.log("🎧 TTS AudioContext initialized");
 
-    // Conectar WebSocket con verificación
     connectWebSocket();
 
     return () => {
@@ -467,7 +475,6 @@ export default function RealtimeSTT() {
   }, []);
 
   const startRecording = async () => {
-    // 🆕 Verificar que esté conectado antes de grabar
     if (connectionStatus !== 'ready') {
       setAudioError('Esperando conexión al servicio...');
       return;
@@ -559,6 +566,42 @@ export default function RealtimeSTT() {
     console.log("⏹️ Recording stopped");
   };
 
+  // ═══════════════════════════════════════════════════════════════
+  // 🆕 ENVIAR MENSAJE DE TEXTO
+  // ═══════════════════════════════════════════════════════════════
+  const sendTextMessage = () => {
+    const text = textInput.trim();
+    if (!text) return;
+
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      setAudioError('No hay conexión. Esperando reconexión...');
+      return;
+    }
+
+    if (isSendingText || thinking) return;
+
+    setIsSendingText(true);
+    setTextInput("");
+
+    wsRef.current.send(JSON.stringify({
+      event: "text_message",
+      text: text,
+      enableTTS: enableTTSForText,
+    }));
+
+    console.log(`💬 Sent text message: "${text}" (TTS: ${enableTTSForText})`);
+  };
+
+  const handleTextKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendTextMessage();
+    }
+  };
+
+  // Determinar si el input de texto está habilitado
+  const isTextInputEnabled = connectionStatus === 'ready' && !isSendingText && !thinking;
+
   return (
     <div className="chat-container">
       {/* HEADER */}
@@ -568,7 +611,6 @@ export default function RealtimeSTT() {
           <h1>Voice Chat Assistant</h1>
         </div>
         <div className="header-status">
-          {/* 🆕 Mostrar estado de conexión */}
           {connectionStatus === 'connecting' && (
             <span className="status-badge connecting">
               <span className="connecting-dot"></span>
@@ -601,7 +643,7 @@ export default function RealtimeSTT() {
         </div>
       </div>
 
-      {/* 🆕 MENSAJE DE CONEXIÓN */}
+      {/* MENSAJE DE CONEXIÓN */}
       {connectionMessage && (
         <div className="connection-banner">
           <span className="connection-icon">⏳</span>
@@ -611,12 +653,12 @@ export default function RealtimeSTT() {
 
       {/* CHAT MESSAGES */}
       <div className="chat-messages" ref={chatContainerRef}>
-        {messages.length === 0 && (
+        {messages.length === 0 && !thinking && !agentText && (
           <div className="empty-state">
             <div className="empty-icon">💬</div>
             <p>
               {connectionStatus === 'ready' 
-                ? 'Presiona "Iniciar" y comienza a hablar'
+                ? 'Escribe un mensaje o presiona el micrófono para hablar'
                 : 'Esperando conexión...'}
             </p>
           </div>
@@ -633,6 +675,8 @@ export default function RealtimeSTT() {
             <div className="message-content">
               <div className="message-text">{message.text}</div>
               <div className="message-time">
+                {message.source === 'voice' && '🎙️ '}
+                {message.source === 'text' && '⌨️ '}
                 {message.timestamp.toLocaleTimeString('es-ES', { 
                   hour: '2-digit', 
                   minute: '2-digit' 
@@ -692,12 +736,46 @@ export default function RealtimeSTT() {
         </div>
       )}
 
-      {/* CONTROLS */}
+      {/* 🆕 TEXT INPUT AREA */}
+      <div className="text-input-area">
+        <div className="text-input-row">
+          <textarea
+            ref={textInputRef}
+            className="text-input"
+            value={textInput}
+            onChange={(e) => setTextInput(e.target.value)}
+            onKeyDown={handleTextKeyDown}
+            placeholder={isTextInputEnabled ? "Escribe tu mensaje..." : "Esperando conexión..."}
+            disabled={!isTextInputEnabled}
+            rows={1}
+          />
+          <button 
+            className="btn-send"
+            onClick={sendTextMessage}
+            disabled={!isTextInputEnabled || !textInput.trim()}
+            title="Enviar mensaje"
+          >
+            <span className="btn-send-icon">➤</span>
+          </button>
+        </div>
+        <div className="text-input-options">
+          <label className="tts-toggle" title="Reproducir respuesta en voz alta">
+            <input 
+              type="checkbox"
+              checked={enableTTSForText}
+              onChange={(e) => setEnableTTSForText(e.target.checked)}
+            />
+            <span className="tts-toggle-label">🔊 Leer respuesta en voz alta</span>
+          </label>
+        </div>
+      </div>
+
+      {/* VOICE CONTROLS */}
       <div className="chat-controls">
         <button 
           className={`control-btn ${isRecording ? 'btn-recording' : 'btn-start'}`}
           onClick={isRecording ? stopRecording : startRecording}
-          disabled={connectionStatus !== 'ready'} // 🆕 Deshabilitar hasta que esté listo
+          disabled={connectionStatus !== 'ready'}
         >
           {isRecording ? (
             <>
@@ -707,7 +785,7 @@ export default function RealtimeSTT() {
           ) : (
             <>
               <span className="btn-icon">🎙️</span>
-              {connectionStatus === 'ready' ? 'Iniciar' : 'Conectando...'}
+              {connectionStatus === 'ready' ? 'Micrófono' : 'Conectando...'}
             </>
           )}
         </button>
