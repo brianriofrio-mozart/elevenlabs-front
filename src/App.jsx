@@ -602,6 +602,18 @@ export default function RealtimeSTT() {
   // Determinar si el input de texto está habilitado
   const isTextInputEnabled = connectionStatus === 'ready' && !isSendingText && !thinking;
 
+  const startNewConversation = () => {
+    if (isRecording) stopRecording();
+    stopAllAudio();
+    setMessages([]);
+    setPartial("");
+    setAgentText("");
+    setThinking(false);
+    setTextInput("");
+    setAudioError(null);
+    setIsSendingText(false);
+  };
+
   return (
     <div className="chat-container">
       {/* HEADER */}
@@ -609,6 +621,15 @@ export default function RealtimeSTT() {
         <div className="header-title">
           <span className="header-icon">🤖</span>
           <h1>Voice Chat Assistant</h1>
+        </div>
+        <div className="header-actions">
+          <button
+            className="btn-new-chat"
+            onClick={startNewConversation}
+            title="Nueva conversación"
+          >
+            + Nueva conversación
+          </button>
         </div>
         <div className="header-status">
           {connectionStatus === 'connecting' && (
