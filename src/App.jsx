@@ -612,6 +612,9 @@ export default function RealtimeSTT() {
     setTextInput("");
     setAudioError(null);
     setIsSendingText(false);
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ event: "new_conversation" }));
+    }
   };
 
   return (
